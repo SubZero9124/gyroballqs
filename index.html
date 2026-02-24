@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Gyro Balance Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0f172a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none; /* Prevents scroll on mobile */
+        }
+        canvas {
+            display: block;
+        }
+        
+        /* Stellar Game UI */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .score-board {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 15px 30px;
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            text-align: center;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .score-title {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            opacity: 0.8;
+            margin-bottom: 5px;
+        }
+
+        .score-value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #4ade80;
+            text-shadow: 0 0 10px #4ade80;
+            margin: 0;
+        }
+
+        .status-msg {
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            text-align: center;
+            margin-top: 20px;
+            transition: opacity 0.3s;
+            opacity: 0;
+        }
+
+        /* Start Screen */
+        #start-screen {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(15, 23, 42, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+            z-index: 10;
+        }
+
+        h1 {
+            color: white;
+            font-size: 48px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px #38bdf8;
+            text-align: center;
+        }
+        
+        p {
+            color: #cbd5e1;
+            margin-bottom: 40px;
+            text-align: center;
+            max-width: 300px;
+        }
+
+        button {
+            background: linear-gradient(45deg, #38bdf8, #818cf8);
+            border: none;
+            padding: 15px 40px;
+            border-radius: 30px;
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 10px 20px rgba(56, 189, 248, 0.4);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:active {
+            transform: scale(0.95);
+            box-shadow: 0 5px 10px rgba(56, 189, 248, 0.4);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="header">
+            <div class="score-board">
+                <div class="score-title">Score</div>
+                <div class="score-value" id="score">0</div>
+            </div>
+        </div>
+        <div class="status-msg" id="status-msg">Nice try!</div>
+    </div>
+
+    <div id="start-screen">
+        <h1>Tilt & Roll</h1>
+        <p>Tilt your phone (or use Arrow Keys) to guide the ball up the path without falling into the lower slots!</p>
+        <button id="start-btn">TAP TO START</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"></script>
+
+    <script>
+        // --- 1. Variables & Setup ---
+        let scene, camera, renderer, world;
+        let ballMesh, ballBody;
+        let boardGroup, boardBody;
+        let score = 0;
+        let isPlaying = false;
+        
+        // Tilt target values (from gyro or keys)
+        let targetTiltX = 0; // Forward/Back
+        let targetTiltZ = 0; // Left/Right
+        const MAX_TILT = Math.PI / 6; // Limit tilt to 30 degrees
+
+        const uiScore = document.getElementById('score');
+        const uiStatus = document.getElementById('status-msg');
+
+        // --- 2. Initialize Three.js and Cannon.js ---
+        function init() {
+            // Scene setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color('#0f172a');
+            // Add subtle fog
+            scene.fog = new THREE.FogExp2('#0f172a', 0.02);
+
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 15, 12);
+            camera.lookAt(0, 0, 0);
+
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 20, 10);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 1024;
+            dirLight.shadow.mapSize.height = 1024;
+            scene.add(dirLight);
+
+            // Physics World Setup
+            world = new CANNON.World();
+            world.gravity.set(0, -20, 0); // Stronger gravity for snappy gameplay
+
+            // --- 3. Build the Game Board ---
+            createBoard();
+            createBall();
+
+            // Window resize handler
+            window.addEventListener('resize', onWindowResize);
+
+            // Start animation loop
+            animate();
+        }
+
+        function createBoard() {
+            // We use a Group to rotate the visual board, and a Kinematic Body to rotate the physics board
+            boardGroup = new THREE.Group();
+            scene.add(boardGroup);
+
+            boardBody = new CANNON.Body({
+                mass: 0, // 0 makes it static/kinematic
+                type: CANNON.Body.KINEMATIC,
+                position: new CANNON.Vec3(0, 0, 0)
+            });
+            world.addBody(boardBody);
+
+            // Materials
+            const woodMat = new THREE.MeshStandardMaterial({ color: '#d4a373', roughness: 0.8 });
+            const darkMat = new THREE.MeshStandardMaterial({ color: '#faedcd', roughness: 0.9 });
+            const pathMat = new THREE.MeshStandardMaterial({ color: '#fefae0', roughness: 0.6 });
+            const wallMat = new THREE.MeshStandardMaterial({ color: '#ccd5ae', roughness: 0.7 });
+
+            // Helper function to add parts to the board
+            function addBoardPart(width, height, depth, x, y, z, material) {
+                // Visual
+                const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+                mesh.position.set(x, y, z);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+                boardGroup.add(mesh);
+
+                // Physics
+                const shape = new CANNON.Box(new CANNON.Vec3(width / 2, height / 2, depth / 2));
+                boardBody.addShape(shape, new CANNON.Vec3(x, y, z));
+            }
+
+            // Base Plane (The lower level where slots are)
+            addBoardPart(12, 0.5, 20, 0, -0.25, 0, woodMat);
+
+            // Outer Walls
+            addBoardPart(0.5, 2, 20, -6.25, 1, 0, wallMat); // Left
+            addBoardPart(0.5, 2, 20, 6.25, 1, 0, wallMat);  // Right
+            addBoardPart(13, 2, 0.5, 0, 1, -10.25, wallMat); // Top
+            addBoardPart(13, 2, 0.5, 0, 1, 10.25, wallMat);  // Bottom
+
+            // Create Score Slots on the left side (dividers)
+            for (let i = -8; i <= 8; i += 4) {
+                addBoardPart(4, 1, 0.2, -4, 0.5, i, darkMat);
+            }
+
+            // Create the Raised Zig-Zag Path (The "wavy" core mechanic)
+            // Path 1 (Start)
+            addBoardPart(2, 1.5, 7, 0, 0.75, 6.5, pathMat);
+            // Path 2 (Middle - shifted right)
+            addBoardPart(2, 1.5, 7, 1.5, 0.75, 0, pathMat);
+            // Path 3 (End - shifted left towards goal)
+            addBoardPart(2, 1.5, 7, -1, 0.75, -6.5, pathMat);
+            // Connection blocks to smooth the zigzag
+            addBoardPart(3.5, 1.5, 2, 0.75, 0.75, 3.5, pathMat);
+            addBoardPart(4.5, 1.5, 2, 0.25, 0.75, -3.5, pathMat);
+        }
+
+        function createBall() {
+            const radius = 0.5;
+            
+            // Visual
+            const geometry = new THREE.SphereGeometry(radius, 32, 32);
+            const material = new THREE.MeshStandardMaterial({ 
+                color: '#ef233c',
+                metalness: 0.3,
+                roughness: 0.2
+            });
+            ballMesh = new THREE.Mesh(geometry, material);
+            ballMesh.castShadow = true;
+            scene.add(ballMesh);
+
+            // Physics
+            const shape = new CANNON.Sphere(radius);
+            ballBody = new CANNON.Body({
+                mass: 1,
+                shape: shape,
+                position: new CANNON.Vec3(0, 4, 8), // Start above the beginning of the path
+                linearDamping: 0.1, // Slight air resistance
+                angularDamping: 0.1
+            });
+            world.addBody(ballBody);
+        }
+
+        // --- 4. Controls & Sensors ---
+        function setupControls() {
+            // Gyroscope Controls
+            window.addEventListener('deviceorientation', (e) => {
+                if (!isPlaying) return;
+                
+                // beta is front/back (-180 to 180)
+                // gamma is left/right (-90 to 90)
+                let beta = e.beta || 0;
+                let gamma = e.gamma || 0;
+
+                // Clamp values and map to radians
+                // We divide by 45 to make it responsive but not overly sensitive
+                targetTiltX = THREE.MathUtils.clamp((beta / 45) * MAX_TILT, -MAX_TILT, MAX_TILT);
+                targetTiltZ = THREE.MathUtils.clamp((gamma / 45) * MAX_TILT, -MAX_TILT, MAX_TILT);
+            });
+
+            // Keyboard Fallback for Desktop Testing
+            window.addEventListener('keydown', (e) => {
+                if (!isPlaying) return;
+                const step = 0.05;
+                if (e.key === 'ArrowUp') targetTiltX -= step;
+                if (e.key === 'ArrowDown') targetTiltX += step;
+                if (e.key === 'ArrowLeft') targetTiltZ -= step;
+                if (e.key === 'ArrowRight') targetTiltZ += step;
+                
+                targetTiltX = THREE.MathUtils.clamp(targetTiltX, -MAX_TILT, MAX_TILT);
+                targetTiltZ = THREE.MathUtils.clamp(targetTiltZ, -MAX_TILT, MAX_TILT);
+            });
+        }
+
+        // --- 5. Game Logic ---
+        function checkGameLogic() {
+            // If ball falls into the lower slots (Y drops below 1.2)
+            if (ballBody.position.y < 1.0) {
+                // Determine score based on Z position (how far up the board they got)
+                const zPos = ballBody.position.z;
+                let pointsGained = 0;
+
+                if (zPos < -6) pointsGained = 10; // Top goal
+                else if (zPos < -2) pointsGained = 7;
+                else if (zPos < 2) pointsGained = 5;
+                else if (zPos < 6) pointsGained = 2;
+                else pointsGained = 0; // Fell off immediately
+
+                score += pointsGained;
+                uiScore.innerText = score;
+
+                // Show Status Message
+                uiStatus.innerText = pointsGained > 0 ? `+${pointsGained} Points!` : "Oops!";
+                uiStatus.style.opacity = 1;
+                setTimeout(() => uiStatus.style.opacity = 0, 1500);
+
+                resetBall();
+            }
+
+            // Safety net if ball glitches out of bounds
+            if (ballBody.position.y < -5) {
+                resetBall();
+            }
+        }
+
+        function resetBall() {
+            ballBody.position.set(0, 3, 8); // Drop slightly above start
+            ballBody.velocity.set(0, 0, 0);
+            ballBody.angularVelocity.set(0, 0, 0);
+        }
+
+        // --- 6. Main Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (isPlaying) {
+                // Smoothly interpolate the board's rotation towards target tilt
+                const currentQuat = boardGroup.quaternion.clone();
+                const targetEuler = new THREE.Euler(targetTiltX, 0, targetTiltZ, 'XYZ');
+                const targetQuat = new THREE.Quaternion().setFromEuler(targetEuler);
+                
+                currentQuat.slerp(targetQuat, 0.1);
+                
+                // Apply to Visual Mesh
+                boardGroup.quaternion.copy(currentQuat);
+                
+                // Apply to Physics Body
+                boardBody.quaternion.copy(currentQuat);
+
+                // Step physics world
+                world.step(1 / 60);
+
+                // Sync Ball physics to visual
+                ballMesh.position.copy(ballBody.position);
+                ballMesh.quaternion.copy(ballBody.quaternion);
+
+                checkGameLogic();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- 7. Start Game & iOS Permissions ---
+        document.getElementById('start-btn').addEventListener('click', () => {
+            // Request permission for iOS 13+ devices
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission()
+                    .then(permissionState => {
+                        if (permissionState === 'granted') {
+                            startGame();
+                        } else {
+                            alert("Gyroscope permission denied. You can still use Arrow Keys on desktop.");
+                            startGame();
+                        }
+                    })
+                    .catch(console.error);
+            } else {
+                // Non-iOS 13+ devices
+                startGame();
+            }
+        });
+
+        function startGame() {
+            document.getElementById('start-screen').style.display = 'none';
+            setupControls();
+            isPlaying = true;
+            resetBall();
+        }
+
+        // Initialize everything
+        init();
+    </script>
+</body>
+</html>
